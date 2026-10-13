@@ -13,7 +13,6 @@ Data (docked ensembles, receptor ensembles, MD reference, analysis):
     workstation/        receptor extraction, fingerprints, scoring, RMSD, errors, figures
     cluster/            config generation and single-node Vina-GPU docking
     cluster/holo_pilot/ the 10-ligand holo pilot: configs, docking, gap-fill, collapse
-    benchmark/          engine and throughput benchmarks (local and cluster)
     legacy/             superseded scripts, kept for the record; not part of the pipeline
 
 ## Pipeline
