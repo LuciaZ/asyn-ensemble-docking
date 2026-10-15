@@ -7,29 +7,39 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --gres=gpu:1
 #SBATCH --mem=16G
-#SBATCH --time=5-00:00:00
-#SBATCH --array=0-199%9
-#SBATCH --requeue
+#SBATCH --time=7-00:00:00
+#SBATCH --array=0-8
 #SBATCH --mail-user=zhihan.zhang.gr@dartmouth.edu
 #SBATCH --mail-type=END,FAIL
 #SBATCH -o /dartfs-hpc/rc/lab/R/RobustelliP/Zhihan/logs/dock1n_%A_%a.out
 #SBATCH -e /dartfs-hpc/rc/lab/R/RobustelliP/Zhihan/logs/dock1n_%A_%a.err
 # ============================================================================
-# Single-node Vina-GPU docking. Submit with:
+# dock_one_node.slurm -- Vina-GPU docking confined to one node
 #
-# %9 must equal the number of free GPUs on the node(sinfo -O NodeHost,Gres,GresUsed). 
-# One process per card is not a preference: several Vina-GPU processes initialising the same card raise
-# Err-1001:CL_PLATFORM_NOT_FOUND_KHR,which is how the earlier %40 and even %8 gap-fill runs collapsed.
+#   sbatch --export=ALL,MODE=apo,BASE=<project dir> --nodelist=<node> \
+#          --array=0-<N-1> dock_one_node.slurm
 #
-# Three things carried over from the pilot:
-#   Precompiled vgpu_make_ampere (with Kernel*_Opt.bin) avoids JIT; in single-ligand mode Vina
-#     otherwise recompiles the kernel per box (~11 s vs ~1 s), and concurrent JIT also triggers CL_BUILD_PROGRAM_FAILURE.
-#     The kernels are GA102-only and will not load on A100/V100/H200.
-#   Batched container starts: apptainer needs ~5 s to mount the 4.1 GB sif from dartfs, far more than the ~1 s of
-#     docking. BATCH_FRAMES frames share one exec. Batching only pays on wholly fresh frames, which these are.
-#   Local sif copy: many tasks reading the same dartfs sif contend.
+# WORK DISTRIBUTION. Every task walks the whole manifest and claims a frame
+# with an atomic mkdir before docking it. Earlier versions split the manifest
+# into fixed stripes by task id; a task that started without a usable GPU
+# exited and its stripe -- a tenth of the work -- was never docked by anyone,
+# which cost a full five-day round. With claiming, any number of tasks may
+# drop out and the rest still finish everything. Claims live under
+# claims/<CLAIMS_TAG>/<lig>/<frame>; the tag defaults to the array job id, so
+# a later job never inherits the stale claims of one that was killed. Give
+# two concurrent jobs the same CLAIMS_TAG to make them share the work.
 #
-# One done-marker per box; re-submitting after a timeout or preemption resumes where it stopped.
+# Keep the array no larger than the node's usable GPUs. Several Vina-GPU
+# processes on one card fail with CL_PLATFORM_NOT_FOUND_KHR.
+#
+# Carried over from the pilot:
+#   precompiled kernels -- vgpu_make_ampere holds GA102 binaries (A5000,
+#     A5500). Without them single-ligand mode JIT-compiles per box (~11 s vs
+#     ~1 s). They do not load on A100/V100/H200; point KM elsewhere for those.
+#   batched container starts -- apptainer needs ~5 s to mount the sif, so
+#     BATCH_FRAMES frames share one exec.
+#   local sif copy -- many tasks reading one dartfs sif contend.
+#   done-markers -- one per box; re-submission resumes.
 # ============================================================================
 set -uo pipefail
 
@@ -45,22 +55,22 @@ CFGROOT="${BASE}/configs"
 OUTROOT="${BASE}/outputs_vinagpu/_raw"
 DONEDIR="${BASE}/done"
 LOGDIR="${BASE}/logs/boxes"
-mkdir -p "${DONEDIR}" "${LOGDIR}"
+TID=${SLURM_ARRAY_TASK_ID:-0}
+NTASK=${SLURM_ARRAY_TASK_COUNT:-1}
+CLAIMS="${BASE}/claims/${CLAIMS_TAG:-${SLURM_ARRAY_JOB_ID:-manual}}"
+mkdir -p "${DONEDIR}" "${LOGDIR}" "${CLAIMS}"
 
 [ -f "${MANIFEST}" ] || { echo "no manifest at ${MANIFEST}"; exit 1; }
 TOTAL=$(wc -l < "${MANIFEST}")
-NTASK=$(( ${SLURM_ARRAY_TASK_COUNT:-200} ))
-TID=${SLURM_ARRAY_TASK_ID}
-
-echo "task ${TID}/${NTASK}  mode=${MODE}  host=$(hostname)  gpu=${CUDA_VISIBLE_DEVICES:-?}"
+echo "task ${TID}/${NTASK}  mode=${MODE}  host=$(hostname)  claims=${CLAIMS}"
 echo "manifest: ${TOTAL} ligand-frame units"
-# Hard check: %N does not guarantee a card. Last run amp04 had only 9 free, yet SLURM started task
-# 10 onward anyway; their nvidia-smi reported "No devices were found", so every box
-# failed instantly -- that is where 900k silent failures came from. Exit immediately when there is no GPU.
+
+# A task without a usable card exits without touching any work; under
+# claiming that no longer leaves anything undone.
 GPUINFO=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>&1)
 echo "${GPUINFO}"
-if ! echo "${GPUINFO}" | grep -qi "RTX A5"; then
-    echo "task ${TID}: no usable GPU -- exiting before doing any work"
+if [ -z "${GPUINFO}" ] || echo "${GPUINFO}" | grep -qiE "no devices|failed|error"; then
+    echo "task ${TID}: no usable GPU -- exiting, other tasks will cover its work"
     exit 0
 fi
 
@@ -76,6 +86,7 @@ if [ -w "${SCRATCH}" ]; then
     fi
 fi
 
+CONSEC_FAIL=0
 run_batch() {
     [ "$#" -eq 0 ] && return 0
     local cmd="" c
@@ -86,11 +97,9 @@ run_batch() {
         --bind /etc/OpenCL/vendors:/etc/OpenCL/vendors \
         --bind /dartfs-hpc:/dartfs-hpc \
         "${LOCAL_SIF}" bash -c "${cmd}" \
-        >> "${LOGDIR}/task_${TID}.log" 2>&1
+        >> "${LOGDIR}/task_${SLURM_ARRAY_JOB_ID:-x}_${TID}.log" 2>&1
     local rc=$?
-    if [ "${rc}" -ne 0 ]; then
-        echo "  apptainer exited ${rc}"
-    fi
+    [ "${rc}" -ne 0 ] && echo "  apptainer exited ${rc}"
     for c in "$@"; do
         local res fid lig outf mk
         res=$(basename "${c}" .txt); res="${res#res}"
@@ -105,34 +114,43 @@ run_batch() {
             CONSEC_FAIL=$(( CONSEC_FAIL + 1 ))
         fi
     done
-    # Circuit breaker: a wholly failed batch means a broken environment (no card, corrupt sif, wrong kernel arch);
-    # continuing would only pile up useless failures
+    # a wholly failed stretch means a broken environment (card, sif, kernel
+    # architecture); stop rather than pile up failures
     if [ "${CONSEC_FAIL}" -ge 60 ]; then
         echo "task ${TID}: ${CONSEC_FAIL} consecutive failures -- aborting"
         exit 1
     fi
 }
 
-n_done=0; n_skip=0; batch=(); CONSEC_FAIL=0
+n_done=0; n_skip=0; n_claimed=0; batch=()
 start=$(date +%s)
-for (( line = TID + 1; line <= TOTAL; line += NTASK )); do
-    read -r lig fid <<< "$(sed -n "${line}p" "${MANIFEST}")"
+# tasks start at different offsets so they do not all contend for line 1
+offset=$(( TID * TOTAL / (NTASK > 0 ? NTASK : 1) ))
+
+while read -r lig fid; do
     [ -z "${lig:-}" ] && continue
+    todo=()
     for res in $(seq -w 1 ${N_RES}); do
-        mk="${DONEDIR}/lig${lig}_frame_${fid}_res${res}.done"
-        [ -f "${mk}" ] && { n_skip=$((n_skip+1)); continue; }
+        if [ -f "${DONEDIR}/lig${lig}_frame_${fid}_res${res}.done" ]; then
+            n_skip=$((n_skip + 1)); continue
+        fi
         cfg="${CFGROOT}/lig${lig}/frame_${fid}/res${res}.txt"
-        [ -f "${cfg}" ] || continue
-        batch+=("${cfg}")
+        [ -f "${cfg}" ] && todo+=("${cfg}")
     done
+    [ "${#todo[@]}" -eq 0 ] && continue
+    mkdir -p "${CLAIMS}/${lig}"
+    mkdir "${CLAIMS}/${lig}/${fid}" 2>/dev/null || continue     # someone else has it
+    n_claimed=$((n_claimed + 1))
+    batch+=("${todo[@]}")
     if [ "${#batch[@]}" -ge $(( BATCH_FRAMES * N_RES )) ]; then
         run_batch "${batch[@]}"
         n_done=$(( n_done + ${#batch[@]} )); batch=()
         el=$(( $(date +%s) - start ))
-        [ "${el}" -gt 0 ] && echo "  ${n_done} boxes, ${n_skip} skipped, $(( n_done * 3600 / el ))/hr"
+        [ "${el}" -gt 0 ] && echo "  ${n_done} boxes, ${n_skip} skipped, ${n_claimed} frames claimed, $(( n_done * 3600 / el ))/hr"
     fi
-done
+done < <(tail -n +"$(( offset + 1 ))" "${MANIFEST}"; head -n "${offset}" "${MANIFEST}")
+
 run_batch "${batch[@]}"
 n_done=$(( n_done + ${#batch[@]} ))
 el=$(( $(date +%s) - start ))
-echo "task ${TID} finished: ${n_done} boxes docked, ${n_skip} already done, ${el}s"
+echo "task ${TID} finished: ${n_done} boxes docked, ${n_skip} already done, ${n_claimed} frames claimed, ${el}s"

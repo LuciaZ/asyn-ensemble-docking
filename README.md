@@ -12,6 +12,7 @@ Data (docked ensembles, receptor ensembles, MD reference, analysis):
     ligand_prep/        SMILES -> SDF -> charged ligands -> PDBQT; protein frames -> PDBQT
     workstation/        receptor extraction, fingerprints, scoring, RMSD, errors, figures
     cluster/            config generation and single-node Vina-GPU docking
+    cluster/apo_pilot/  the 10-ligand apo pilot: setup, configs, docking, collapse
     cluster/holo_pilot/ the 10-ligand holo pilot: configs, docking, gap-fill, collapse
     legacy/             superseded scripts, kept for the record; not part of the pipeline
 
