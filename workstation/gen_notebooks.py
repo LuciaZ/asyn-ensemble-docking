@@ -38,12 +38,17 @@ def analyse(lig):
 
     contacts = {}
     contacts['hphob'] = trajectory_analysis.hphob_contacts(traj, ligand_idx).reshape(shape)
-    contacts['aro'] = (trajectory_analysis.aro_contacts(traj, ligand_rings=g['aromatic_rings']).reshape(shape)
-                       if g['aromatic_rings'] else empty())
-    contacts['hbond'] = (trajectory_analysis.hbond(traj, ligand_idx, lig_hbond_donors=g['hbond_donors']).reshape(shape)
-                         if g['hbond_donors'] else empty())
-    contacts['charge'] = (trajectory_analysis.charge_contacts(traj, Ligand_Pos_Charges=g['positive_charges']).reshape(shape)
-                          if g['positive_charges'] else empty())
+    def safe(f, what):
+        # always call: hbond() also counts protein-donor -> ligand-acceptor H-bonds
+        try:
+            return np.asarray(f(), float).reshape(shape)
+        except Exception as e:
+            print(f"ligand {lig} {what}: {type(e).__name__}: {e} -- zeros")
+            return empty()
+
+    contacts['aro'] = safe(lambda: trajectory_analysis.aro_contacts(traj, ligand_rings=g['aromatic_rings']), 'aro')
+    contacts['hbond'] = safe(lambda: trajectory_analysis.hbond(traj, ligand_idx, lig_hbond_donors=g['hbond_donors']), 'hbond')
+    contacts['charge'] = safe(lambda: trajectory_analysis.charge_contacts(traj, Ligand_Pos_Charges=g['positive_charges']), 'charge')
     contacts['dual'] = np.array([trajectory_analysis.dual_contact(traj, residue_idx=ligand_idx)])
     print(f"ligand {lig}: {n_frames} frames, {n_res} residues")
     return contacts
