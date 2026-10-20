@@ -339,10 +339,18 @@ def plot_propensity(job, lig, prof, outdir=None):
     xs = np.arange(len(RES))
     for ax, t in zip(axes, TYPES):
         pf, ef, ps, es = prof[t]
-        ax.bar(xs - 0.2, pf, 0.4, yerr=2 * ef, color="0.65", ecolor="0.3",
-               capsize=1.5, label="full")
-        ax.bar(xs + 0.2, ps, 0.4, yerr=2 * es, color="tab:blue", ecolor="navy",
-               capsize=1.5, label=f"{N_SUB} frames")
+        ef, es = np.nan_to_num(ef), np.nan_to_num(es)
+        # lines for the profiles, shaded bands for +/- 2 SE; overlapping
+        # bands mean the two estimates agree within error
+        ax.fill_between(xs, np.clip(pf - 2 * ef, 0, None), pf + 2 * ef,
+                        color="0.55", alpha=0.30, lw=0)
+        ax.plot(xs, pf, "-o", color="0.25", ms=3, lw=1.3, label="full")
+        ax.fill_between(xs, np.clip(ps - 2 * es, 0, None), ps + 2 * es,
+                        color="tab:blue", alpha=0.25, lw=0)
+        ax.plot(xs, ps, "--s", color="tab:blue", ms=3, lw=1.3,
+                label=f"{N_SUB} frames")
+        ax.set_ylim(bottom=0)
+        ax.grid(axis="x", color="0.92", lw=0.6)
         ax.set_title(t, fontsize=10)
         ax.set_xticks(xs); ax.set_xticklabels(RES, rotation=90, fontsize=7)
         if not (np.nanmax(pf) > 0 or np.nanmax(ps) > 0):
@@ -351,7 +359,7 @@ def plot_propensity(job, lig, prof, outdir=None):
             ax.set_ylim(0, 1); ax.set_yticks([])
             ax.text(0.5, 0.5, "no contacts in\neither ensemble", ha="center",
                     va="center", transform=ax.transAxes, fontsize=9, color="0.4")
-    axes[0].set_ylabel("propensity (error bars = 2 SE)")
+    axes[0].set_ylabel("propensity (band = 2 SE)")
     axes[0].legend(fontsize=7)
     fig.suptitle(f"{job}  ligand {lig}", fontsize=11)
     fig.tight_layout()
