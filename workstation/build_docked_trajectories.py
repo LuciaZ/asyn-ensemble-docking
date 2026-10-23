@@ -41,7 +41,8 @@
 #   python build_docked_trajectories.py --job apo_pilot10
 #   python build_docked_trajectories.py --job holo_pilot10
 #   python build_docked_trajectories.py --job trio_apo
-#   python build_docked_trajectories.py --job apo_remaining37   # after collapse
+#   python build_docked_trajectories.py --job apo_remaining37
+#   python build_docked_trajectories.py --job holo_remaining37
 # ============================================================================
 import os, re, csv, json, argparse, itertools
 import numpy as np
@@ -67,6 +68,9 @@ JOBS = {
     "apo_remaining37": dict(
         kind="winners", ligs=REMAINING, receptor=APO_REC,
         winners=f"{H}/apo_remaining/winners"),
+    "holo_remaining37": dict(
+        kind="winners", ligs=REMAINING, winners=f"{H}/holo_remaining/winners",
+        receptor=f"{H}/08142026/holo_receptors_pdb/lig{{lig}}/frame_{{fid:06d}}.pdb"),
     # the 20,020-frame runs were never collapsed into winner poses; the best
     # box per frame is read from the extracted score table instead
     "trio_apo": dict(

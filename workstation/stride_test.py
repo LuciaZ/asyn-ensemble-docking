@@ -52,6 +52,7 @@ WINNERS = {
     "apo_pilot10": f"{H}/08142026/winners",
     "holo_pilot10": f"{H}/holo_08192026/winners",
     "apo_remaining37": f"{H}/apo_remaining/winners",
+    "holo_remaining37": f"{H}/holo_remaining/winners",
     "trio_apo": f"{H}/scores_474123/apo",
 }
 ENERGY_COLS = ("energy", "score", "best_energy", "vina_score", "affinity")
